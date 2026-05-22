@@ -45,7 +45,7 @@ This script reads the tags Picard has written to your files and automatically mo
 Install dependencies with:
 
 ```bash
-pip install -r mutagen
+pip install mutagen
 ```
 
 ---
