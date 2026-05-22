@@ -1,4 +1,4 @@
-# Plexamp Music Formatter
+# Plexamp Music Namer
 
 A Python script that reads embedded tags written by [MusicBrainz Picard](https://picard.musicbrainz.org/) and reorganizes your music library into the folder and filename structure expected by Plex — ready for use with Plexamp.
 
@@ -36,6 +36,33 @@ This script reads the tags Picard has written to your files and automatically mo
 
 ---
 
+## Installation
+
+**Option 1 — Clone the repo (recommended)**
+
+```bash
+git clone https://github.com/Twonks/plexamp-music-naming.git
+cd plexamp-music-formatter
+pip install mutagen
+```
+
+**Option 2 — Download just the script**
+
+Go to the [Releases](../../releases) page and download `plex_music_namer.py`, then run:
+
+```bash
+pip install mutagen
+```
+
+**Option 3 — Run directly from GitHub without downloading (Mac/Linux only)**
+
+```bash
+python <(curl -s https://raw.githubusercontent.com/Twonks/plexamp-music-namer/main/plex_music_namer.py) --source "/path/to/music" --dest "/path/to/PlexMusic"
+```
+
+
+---
+
 ## Prerequisites
 
 - Python 3.7+
@@ -45,7 +72,7 @@ This script reads the tags Picard has written to your files and automatically mo
 Install dependencies with:
 
 ```bash
-pip install mutagen
+pip install -r requirements.txt
 ```
 
 ---
