@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""
+Plex Music Organizer
+====================
+Reads MusicBrainz Picard embedded tags and reorganizes your music library
+into Plex's expected folder/file structure.
+
+Requirements:
+    pip install mutagen
+
+Usage:
+    python plex_music_organizer.py --source /path/to/music --dest /path/to/PlexMusic
+    python plex_music_organizer.py --source /path/to/music --dest /path/to/PlexMusic --dry-run
+    python plex_music_organizer.py --source /path/to/music --dest /path/to/PlexMusic --copy
+
+Options:
+    --source    Path to your current music folder (required)
+    --dest      Path to output Plex-formatted music folder (required)
+    --dry-run   Preview what will happen without moving/copying any files
+    --copy      Copy files instead of moving them (safe mode, keeps originals)
+"""
+
+import os
+import re
+import sys
+import shutil
+import argparse
+import logging
+from pathlib import Path
+
+try:
+    from mutagen import File as MutagenFile
+    from mutagen.id3 import ID3NoHeaderError
+except ImportError:
+    print("ERROR: mutagen is not installed.")
+    print("Please run:  pip install mutagen")
+    sys.exit(1)
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)-8s %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("plex_organizer.log", encoding="utf-8"),
+    ],
+)
+log = logging.getLogger(__name__)
+
+# ── Supported audio extensions ────────────────────────────────────────────────
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wv", ".ape", ".wav", ".aiff"}
+
+
+# ── Tag extraction ─────────────────────────────────────────────────────────────
+
+def get_tag(audio, *keys):
+    """Try multiple tag key names and return the first non-empty value found."""
+    for key in keys:
+        val = audio.tags.get(key)
+        if val:
+            if isinstance(val, list):
+                val = val[0]
+            val = str(val).strip()
+            if val:
+                return val
+    return None
+
+
+def extract_tags(filepath):
+    """
+    Read embedded tags from a music file and return a dict with:
+        artist, album_artist, album, title, track_number, disc_number
+    Returns None if the file can't be read or has no tags.
+    """
+    try:
+        audio = MutagenFile(filepath, easy=True)
+    except Exception as e:
+        log.warning(f"Could not read tags from {filepath}: {e}")
+        return None
+
+    if audio is None or audio.tags is None:
+        log.warning(f"No tags found in: {filepath}")
+        return None
+
+    tags = {
+        "artist":       get_tag(audio, "artist", "albumartist"),
+        "album_artist": get_tag(audio, "albumartist", "album_artist", "artist"),
+        "album":        get_tag(audio, "album"),
+        "title":        get_tag(audio, "title"),
+        "track_number": get_tag(audio, "tracknumber"),
+        "disc_number":  get_tag(audio, "discnumber"),
+    }
+    return tags
+
+
+# ── String sanitization ───────────────────────────────────────────────────────
+
+def sanitize(name):
+    """Remove characters that are invalid in folder/file names across all OSes."""
+    name = re.sub(r'[\\/:*?"<>|]', "_", name)
+    name = re.sub(r"[ _]{2,}", " ", name).strip()
+    name = name.rstrip(". ")
+    return name or "Unknown"
+
+
+def parse_number(raw):
+    """
+    Parse a track or disc number from a tag value.
+    Handles formats like "3", "03", "3/12" (track 3 of 12).
+    Returns an integer or None.
+    """
+    if not raw:
+        return None
+    match = re.match(r"(\d+)", str(raw))
+    return int(match.group(1)) if match else None
+
+
+# ── Plex filename builder ──────────────────────────────────────────────────────
+
+def build_plex_filename(tags, ext):
+    """
+    Build the Plex-formatted filename from tags.
+
+    Single-disc:  TrackNumber - TrackName.ext       e.g.  03 - Hey You.mp3
+    Multi-disc:   DiscTrack - TrackName.ext          e.g.  302 - Hey You.mp3
+    """
+    title        = sanitize(tags.get("title") or "Unknown Title")
+    track_num    = parse_number(tags.get("track_number"))
+    disc_num     = parse_number(tags.get("disc_number"))
+
+    if track_num is None:
+        track_str = "00"
+    else:
+        track_str = f"{track_num:02d}"
+
+    if disc_num and disc_num > 1:
+        number_str = f"{disc_num}{track_str}"
+    else:
+        number_str = track_str
+
+    return f"{number_str} - {title}{ext}"
+
+
+def build_plex_path(dest_root, tags):
+    """
+    Return the full destination Path for a track based on its tags.
+
+    Structure:
+        dest_root / ArtistFolder / AlbumFolder / filename
+
+    Various Artists compilations go under:
+        dest_root / Various Artists / AlbumName / filename
+    """
+    album_artist = tags.get("album_artist") or tags.get("artist") or "Unknown Artist"
+    album        = tags.get("album") or "Unknown Album"
+
+    artist_folder = sanitize(album_artist)
+    album_folder  = sanitize(album)
+
+    return Path(dest_root) / artist_folder / album_folder
+
+
+# ── Core organizer ─────────────────────────────────────────────────────────────
+
+def organize_library(source, dest, dry_run=False, copy=False):
+    source = Path(source).resolve()
+    dest   = Path(dest).resolve()
+
+    if not source.exists():
+        log.error(f"Source folder does not exist: {source}")
+        sys.exit(1)
+
+    log.info(f"Source : {source}")
+    log.info(f"Dest   : {dest}")
+    log.info(f"Mode   : {'DRY RUN' if dry_run else ('COPY' if copy else 'MOVE')}")
+    log.info("─" * 60)
+
+    stats = {"ok": 0, "skipped": 0, "errors": 0, "already_done": 0}
+
+    audio_files = [
+        p for p in source.rglob("*")
+        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+    ]
+
+    if not audio_files:
+        log.warning("No audio files found in source folder.")
+        return
+
+    log.info(f"Found {len(audio_files)} audio file(s) to process.\n")
+
+    for filepath in sorted(audio_files):
+        log.info(f"Processing: {filepath.relative_to(source)}")
+
+        tags = extract_tags(filepath)
+        if not tags:
+            log.warning(f"  ↳ SKIPPED — could not read tags\n")
+            stats["skipped"] += 1
+            continue
+
+        missing = [k for k in ("artist", "album", "title", "track_number") if not tags.get(k)]
+        if missing:
+            log.warning(f"  ↳ Missing tags: {', '.join(missing)} — will use fallbacks")
+
+        dest_folder   = build_plex_path(dest, tags)
+        new_filename  = build_plex_filename(tags, filepath.suffix.lower())
+        dest_filepath = dest_folder / new_filename
+
+        log.info(f"  ↳ → {dest_filepath.relative_to(dest)}")
+
+        if dest_filepath == filepath:
+            log.info(f"  ↳ Already in correct location, skipping.\n")
+            stats["already_done"] += 1
+            continue
+
+        if dry_run:
+            log.info(f"  ↳ [DRY RUN] Would {'copy' if copy else 'move'} file.\n")
+            stats["ok"] += 1
+            continue
+
+        try:
+            dest_folder.mkdir(parents=True, exist_ok=True)
+
+            if dest_filepath.exists():
+                stem, suffix = dest_filepath.stem, dest_filepath.suffix
+                counter = 1
+                while dest_filepath.exists():
+                    dest_filepath = dest_folder / f"{stem} ({counter}){suffix}"
+                    counter += 1
+                log.warning(f"  ↳ Name conflict — saving as: {dest_filepath.name}")
+
+            if copy:
+                shutil.copy2(filepath, dest_filepath)
+            else:
+                shutil.move(str(filepath), dest_filepath)
+
+            log.info(f"  ↳ ✓ Done.\n")
+            stats["ok"] += 1
+
+        except Exception as e:
+            log.error(f"  ↳ ERROR: {e}\n")
+            stats["errors"] += 1
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    log.info("=" * 60)
+    log.info("SUMMARY")
+    log.info(f"  Processed    : {stats['ok']}")
+    log.info(f"  Already done : {stats['already_done']}")
+    log.info(f"  Skipped      : {stats['skipped']}")
+    log.info(f"  Errors       : {stats['errors']}")
+    log.info("=" * 60)
+    log.info("Full log saved to: plex_organizer.log")
+
+    if not dry_run and not copy and stats["ok"] > 0:
+        log.info("\nTip: Original empty folders were not removed automatically.")
+        log.info("     You can delete them manually once you've verified everything looks correct.")
+
+
+# ── CLI ────────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Reorganize a MusicBrainz Picard-tagged library into Plex format.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("--source",  required=True, help="Path to your current music folder")
+    parser.add_argument("--dest",    required=True, help="Path to output Plex-formatted music folder")
+    parser.add_argument("--dry-run", action="store_true", help="Preview changes without touching files")
+    parser.add_argument("--copy",    action="store_true", help="Copy files instead of moving (keeps originals)")
+
+    args = parser.parse_args()
+    organize_library(args.source, args.dest, dry_run=args.dry_run, copy=args.copy)
+
+
+if __name__ == "__main__":
+    main()
