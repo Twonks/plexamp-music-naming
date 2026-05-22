@@ -1,4 +1,4 @@
-# Plexamp Music Naming
+# Plexamp Music Formatter
 
 A Python script that reads embedded tags written by [MusicBrainz Picard](https://picard.musicbrainz.org/) and reorganizes your music library into the folder and filename structure expected by Plex — ready for use with Plexamp.
 
@@ -42,10 +42,10 @@ This script reads the tags Picard has written to your files and automatically mo
 - [MusicBrainz Picard](https://picard.musicbrainz.org/) — used to tag your files before running this script
 - `mutagen` — Python library for reading audio tags
 
-Install mutagen with:
+Install dependencies with:
 
 ```bash
-pip install mutagen
+pip install -r requirements.txt
 ```
 
 ---
@@ -141,3 +141,9 @@ Every run saves a `plex_organizer.log` file next to the script. It records every
 - The script scans subfolders recursively, so you can point `--source` at the root of your entire music library
 - Files with naming conflicts at the destination are automatically renamed with a counter suffix rather than overwritten
 - Empty source folders are not deleted after a move — remove them manually once you've verified everything looks correct in Plex
+
+---
+
+## Releases
+
+Check the [Releases](../../releases) page for the latest stable version. It's recommended to download from there rather than pulling directly from the main branch, as main may contain work-in-progress changes.
